@@ -33,7 +33,7 @@ _Static_assert(TRANSP_UART_TX_PIN >= 0 && TRANSP_UART_RX_PIN >= 0, "Specify both
 _Static_assert(TRANSP_UART_BAUD_RATE > 0, "Invalid UART baud rate");
 #if CONFIG_ESP_CONSOLE_UART
 _Static_assert(TRANSP_UART_PORT != CONFIG_ESP_CONSOLE_UART_NUM,
-               "Use a different UART from the log console");
+               "UART is used by console; select USB Serial/JTAG under ESP-STDIO");
 #endif
 
 static const char *TAG = "wifi_uart";

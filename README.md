@@ -3,7 +3,7 @@
 基于 ESP-IDF 6.0 SoftAP 例程实现。数据路径为：
 
 ```text
-TCP client <-- Wi-Fi / TCP --> ESP32-S3 <-- UART1 --> 外部串口设备
+TCP client <-- Wi-Fi / TCP --> ESP32-S3 <-- UART0 --> 外部串口设备
 ```
 
 AP 模式创建热点，STA 模式加入已有热点；**两种模式均由 ESP32-S3 运行 TCP server**，外部设备作为 TCP client 连接。默认只转发一个 TCP 会话，后续连接等待当前会话释放。STA 模式不会主动连接远程 TCP server，因此不需要配置远程服务器 IP。
@@ -61,28 +61,35 @@ TCP server listening on port 5000 (one active client)
 同样编辑 [main/wifi_uart_config.h](main/wifi_uart_config.h)：
 
 ```c
-#define TRANSP_UART_PORT UART_NUM_1
-#define TRANSP_UART_TX_PIN 17
-#define TRANSP_UART_RX_PIN 18
+#define TRANSP_UART_PORT UART_NUM_0
+#define TRANSP_UART_TX_PIN U0TXD_GPIO_NUM  // ESP32-S3: GPIO43
+#define TRANSP_UART_RX_PIN U0RXD_GPIO_NUM  // ESP32-S3: GPIO44
 #define TRANSP_UART_BAUD_RATE 115200
 ```
 
-默认使用 UART1、8 数据位、无校验、1 停止位（115200 / 8N1），无硬件流控。驱动通过 `uart_set_pin()` 将 UART 信号路由到指定 GPIO，填写的是 **GPIO 编号**。
+默认使用 UART0 的原生 U0TXD/U0RXD 引脚、8 数据位、无校验、1 停止位（115200 / 8N1），无硬件流控。`U0TXD_GPIO_NUM` / `U0RXD_GPIO_NUM` 来自 `soc/uart_pins.h`；在 ESP32-S3 上分别为 **GPIO43 / GPIO44**。驱动通过 `uart_set_pin()` 配置对应引脚。
 
 与外部 MCU 或 USB-TTL 模块连接：
 
 | ESP32-S3 | 外部设备 |
 | --- | --- |
-| GPIO17（UART1 TX） | RX |
-| GPIO18（UART1 RX） | TX |
+| GPIO43（U0TXD） | RX |
+| GPIO44（U0RXD） | TX |
 | GND | GND |
 
-使用 **3.3 V TTL 电平**，不能直接连接 RS-232 电平。USB-TTL 模块接到电脑后，在串口工具中选择该模块的 COM 口和 115200 / 8N1。烧录/日志 COM 口与透传 UART1 是两个用途；工程默认保留 UART0 输出日志，代码会拒绝将日志 UART 控制器同时用于透传。
+使用 **3.3 V TTL 电平**，不能直接连接 RS-232 电平。USB-TTL 模块接到电脑后，在串口工具中选择该模块的 COM 口和 115200 / 8N1。
+
+### UART0 与日志、下载接口的冲突
+
+- 工程已将二级 bootloader、应用日志和 panic 输出切换到 **USB Serial/JTAG**，UART0 用于透传。日志使用芯片原生 USB（GPIO19=D−、GPIO20=D+）连接电脑后出现的 COM 口，板上通常标为 USB/OTG；接到 CP210x/CH340 等桥接芯片的 UART USB 口不能显示这些应用日志。具体接口以原理图为准。
+- 新建配置时 `sdkconfig.defaults` 会自动选择 USB 控制台；已有 `sdkconfig` 不会被 defaults 覆盖。若迁移旧配置，在 `idf.py menuconfig → Component config → ESP-STDIO` 中将 `Channel for console output` 设为 `USB Serial/JTAG Controller`，并将 secondary output 设为 `No secondary console`。当前工作区已同步修改；编译期检查仍会拒绝透传与日志共用同一个 UART。
+- 若板载 USB-UART 桥的 TX 已连接 GPIO44，它与外部设备的 TX 会同时驱动 U0RXD。需要通过跳线/电阻等断开桥接芯片对应连接，或只使用该桥作为唯一串口对端；仅关闭电脑串口工具不能保证电气隔离。烧录时也应避免外部设备驱动 UART0，推荐通过原生 USB 烧录并查看日志。
+- **上电/复位最早阶段的 ROM 启动信息仍可能从 U0TXD 输出**，外部设备应忽略启动阶段字节。本改动没有设置永久关闭 ROM 日志的选项，因为该选项会在启动时烧写 eFuse，见 [IDF ROM 日志配置说明](https://docs.espressif.com/projects/esp-idf/en/release-v6.0/esp32s3/api-reference/kconfig-reference.html#config-boot-rom-log-scheme)。若要求从上电起完全无杂字节，需要另行确认 ROM 日志屏蔽或外部硬件隔离方案。
 
 例如，若开发板原理图确认 GPIO4、GPIO5 空闲，可改成：
 
 ```c
-#define TRANSP_UART_PORT UART_NUM_1
+#define TRANSP_UART_PORT UART_NUM_0
 #define TRANSP_UART_TX_PIN 4
 #define TRANSP_UART_RX_PIN 5
 #define TRANSP_UART_BAUD_RATE 9600
@@ -90,7 +97,7 @@ TCP server listening on port 5000 (one active client)
 
 接线随之改为 GPIO4→对端 RX、GPIO5←对端 TX，对端也设置为 9600 / 8N1。
 
-选脚必须对照实际板卡原理图：TX 必须支持输出，RX 必须支持输入，两个脚不可相同；GPIO19/20 通常用于原生 USB，GPIO26～32 通常连接 Flash/PSRAM，部分 Octal 模组还占用 GPIO33～37；GPIO0/3/45/46 是启动配置脚。GPIO17/18 也需要确认没有被板载外设占用。芯片和驱动限制参考 [Espressif GPIO 文档](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/gpio.html)和 [UART 文档](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/uart.html)。
+选脚必须对照实际板卡原理图：TX 必须支持输出，RX 必须支持输入，两个脚不可相同；GPIO19/20 已用于原生 USB 日志，应保留，GPIO26～32 通常连接 Flash/PSRAM，部分 Octal 模组还占用 GPIO33～37；GPIO0/3/45/46 是启动配置脚。GPIO43/44 需要确认是否连接了板载 USB-UART 桥。芯片和驱动限制参考 [Espressif GPIO 文档](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/gpio.html)和 [UART 文档](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/peripherals/uart.html)。
 
 ## 3. 编译和烧录
 
@@ -103,7 +110,7 @@ idf.py build
 idf.py -p COM7 flash monitor
 ```
 
-`COM7` 替换为开发板烧录端口；已配置 ESP32-S3 的工程可跳过 `set-target`。修改头文件后重新编译、烧录。按 `Ctrl+]` 退出 monitor。
+`COM7` 替换为开发板原生 USB Serial/JTAG 的 COM 口；已配置 ESP32-S3 的工程可跳过 `set-target`。修改头文件后重新编译、烧录。控制台变更还会更新 bootloader，应使用 `flash` 烧录完整构建产物，不能只烧录应用。按 `Ctrl+]` 退出 monitor。
 
 ## 4. 验证双向透传
 
@@ -118,7 +125,7 @@ idf.py -p COM7 flash monitor
 
 ### 自动回环检查
 
-断开外部串口设备，**直接短接 ESP32-S3 的 TX 和 RX 引脚**（默认 GPIO17↔GPIO18），使 TCP→UART TX 的内容通过 UART RX 返回 TCP。电脑连接对应网络后运行：
+断开外部串口设备并隔离板载 USB-UART 桥的 TX，**直接短接 ESP32-S3 的 TX 和 RX 引脚**（默认 GPIO43↔GPIO44），使 TCP→UART TX 的内容通过 UART RX 返回 TCP。电脑连接对应网络后运行：
 
 ```powershell
 python tests/tcp_loopback_test.py 192.168.4.1 --port 3333
@@ -128,7 +135,7 @@ STA 模式替换为日志中的 IP 和配置端口。脚本只使用 Python 标�
 
 脚本默认期限为 10 秒，适用于默认 115200 波特率；如果改成 9600，将脚本中的 `TIMEOUT` 改为 30 秒或更长，避免 16384 字节的串口传输时间触发超时。
 
-当前已完成 ESP32-S3 的 AP、STA 两个分支编译和链接；回环脚本通过了本机模拟 TCP 服务的正常回传、数据损坏及无响应检查。尚未烧录开发板，实际 Wi-Fi/UART 双向通信和断线恢复需要按上述步骤进行实机验收。
+当前 UART0 配置已完成默认 AP 固件及 bootloader 的编译和链接；回环脚本通过了本机模拟 TCP 服务的正常回传、数据损坏及无响应检查。尚未烧录开发板，实际 Wi-Fi/UART 双向通信和断线恢复需要按上述步骤进行实机验收。
 
 ## 5. 运行边界
 
