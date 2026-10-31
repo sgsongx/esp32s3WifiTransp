@@ -4,13 +4,14 @@ menu "Example Configuration"
         string "WiFi SSID"
         default "myssid"
         help
-            SSID (network name) for the example to connect to.
+            AP mode: network name to create. STA mode: network name to join.
+            Mode and UART/TCP settings are in main/wifi_uart_config.h.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
         default "mypassword"
         help
-            WiFi password (WPA or WPA2) for the example to use.
+            WiFi password: 8..63 bytes, or empty for an open network.
     config ESP_WIFI_CHANNEL
         int "WiFi Channel"
         range 1 13
@@ -20,6 +21,7 @@ menu "Example Configuration"
 
     config ESP_MAX_STA_CONN
         int "Maximal STA connections"
+        range 1 10
         default 4
         help
             Max number of the STA connects to AP.
